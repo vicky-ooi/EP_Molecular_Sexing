@@ -1,0 +1,321 @@
+---
+title: "Sexing_EP_analysis"
+author: "Vicky Ooi"
+date: "2026-08-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1) Import dataset:
+```{r}
+sexing_df <- read.csv("/media/vickyooi/Expansion/Sexing/R_analysis/Mastersheet_statistics.csv")
+
+sexing_df$Year <- as.factor(sexing_df$Year)
+sexing_df$Type <- as.factor(sexing_df$Type)
+sexing_df$Assigned_sex_P8P2 <- as.factor(sexing_df$Assigned_sex_P8P2)
+sexing_df$Assigned_sex_voEP <- as.factor(sexing_df$Assigned_sex_voEP)
+
+sexing_df
+```
+
+# 2) Checking how many males and females assigned for each primer set and how many are discordant:
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Counting M and F for P8/P2:
+table(sexing_df$Assigned_sex_P8P2)
+
+# Counting M and F for voEP:
+table(sexing_df$Assigned_sex_voEP)
+
+# Counting M and F for each primer set by sample type:
+feather_summary <- sexing_df %>%
+  filter(Type == "Feather") %>%
+  select(Assigned_sex_P8P2, Assigned_sex_voEP) %>%
+  pivot_longer(cols = everything(), names_to = "Primer", values_to = "Sex") %>%
+  count(Primer, Sex)
+
+guano_summary <- sexing_df %>%
+  filter(Type == "Guano") %>%
+  select(Assigned_sex_P8P2, Assigned_sex_voEP) %>%
+  pivot_longer(cols = everything(), names_to = "Primer", values_to = "Sex") %>%
+  count(Primer, Sex)
+
+# Checking which samples are discordant:
+discordant_feathers <- sexing_df %>%
+  filter(Type == "Feather") %>%
+  filter(Assigned_sex_P8P2 != Assigned_sex_voEP)
+
+discordant_feathers
+
+discordant_guano <- sexing_df %>%
+  filter(Type == "Guano") %>%
+  filter(Assigned_sex_P8P2 != Assigned_sex_voEP)
+
+discordant_guano
+```
+
+# 3) Comparing amplification success between primer sets:
+```{r}
+# Creating success vs. unsuccessful PCR table:
+library(dplyr)
+library(tidyr)
+
+amplification_df <- sexing_df %>%
+  select(Sample, Type, Assigned_sex_P8P2, Assigned_sex_voEP) %>%
+  mutate(P8P2_outcome = case_when(Assigned_sex_P8P2 %in% c("M", "F") ~ "Successful", 
+                                  TRUE ~ "Unsuccessful"),
+         voEP_outcome = case_when(Assigned_sex_voEP %in% c("M", "F") ~ "Successful", 
+                                  TRUE ~ "Unsuccessful")) 
+
+amplification_df$P8P2_outcome <- as.factor(amplification_df$P8P2_outcome)
+
+amplification_df$voEP_outcome <- as.factor(amplification_df$voEP_outcome)
+
+# Creating contingency tables for each sample type:
+
+featheramp_conttable <- amplification_df %>%
+  filter(Type == "Feather") %>%
+  with(table(P8P2_outcome, voEP_outcome)) %>%
+  as.matrix()
+
+guanoamp_conttable <- amplification_df %>%
+  filter(Type == "Guano") %>%
+  with(table(P8P2_outcome, voEP_outcome)) %>%
+  as.matrix()
+
+# Running McNemar's Exact test to see if the probability of amplification success differs between P8/P2 and voEP primer sets:
+library(exact2x2)
+
+mcnemars_feather <- mcnemar.exact(featheramp_conttable)
+
+mcnemars_guano <- mcnemar.exact(guanoamp_conttable)
+```
+
+# Plotting amplification success for both primer sets:
+```{r}
+amp_plotdf <- amplification_df %>%
+  group_by(Type) %>%
+  summarize(total_samples = n(),
+            P8P2_successful = sum(P8P2_outcome == "Successful"),
+            voEP_successful = sum(voEP_outcome == "Successful"),
+            P8P2_unsuccessul = sum(P8P2_outcome == "Unsuccessful"),
+            voEP_unsuccessful = sum(voEP_outcome == "Unsuccessful")) %>%
+  mutate(P8P2_percent_Successful = (P8P2_successful/total_samples)*100,
+         P8P2_percent_Unsuccessful = (P8P2_unsuccessul/ total_samples) *100,
+         voEP_percent_Successful = (voEP_successful/total_samples)*100,
+         voEP_percent_Unsuccessful = (voEP_unsuccessful/ total_samples *100)) %>%
+  select(Type, P8P2_percent_Successful, P8P2_percent_Unsuccessful, voEP_percent_Successful, voEP_percent_Unsuccessful) %>%
+  pivot_longer(cols = -Type, 
+               names_to = c("Primer", ".value"), 
+               names_pattern = "(.*)_percent_(.*)") %>%
+  pivot_longer(cols = c("Successful", "Unsuccessful"),
+               names_to = "Amplification",
+               values_to = "Percentage") %>%
+   mutate(Primer = factor(Primer, 
+                          levels = c("P8P2", "voEP"), 
+                          labels = c("P8/P2", "voEP")),
+          Type = factor(Type, 
+                  levels = c("Feather", "Guano"), 
+                  labels = c("Feather (n = 94)", "Guano (n = 169)"))) 
+
+amp_plotdf$Amplification = factor(amp_plotdf$Amplification, levels = c("Unsuccessful", "Successful"))
+
+feather_label <- "italic(p) == '0.25'"
+guano_label <- "italic(p) == 6.104 %*% 10^-5"
+
+stats_annotation <- data.frame(Type = c("Feather (n = 94)", "Guano (n = 169)"),
+                               start = c("P8/P2", "P8/P2"),
+                               end = c("voEP", "voEP"),
+                               y_position = c(105, 105),
+                               label = c(feather_label, guano_label))
+
+library(ggplot2)
+library(ggpubr)
+
+amplification_plot <- ggplot(amp_plotdf, aes(x = Primer, y = Percentage, fill = Amplification)) +
+  geom_bar(stat = "identity", width = 0.8, color = "black", linewidth = 0.3) +
+  facet_wrap(~ Type) +
+  geom_bracket(data = stats_annotation,
+               aes(xmin = start, xmax = end, label = label, y.position = y_position),
+               inherit.aes = FALSE,
+               type = "expression",
+               tip.length = 0.01,
+               vjust = -0.3,
+               size = 0.4,
+               label.size = 3.5) +
+  scale_y_continuous(limits = c(0, 110), breaks = seq(0, 100, 20)) +
+  theme_classic() +
+  labs(x = "Primer", y= "Percent Amplification", fill = "Outcome") +
+  scale_fill_manual(values = c("#C2BEBE","#525252")) +
+  theme(axis.title = element_text(face= "bold", size =12),
+        axis.text = element_text(size =11),
+        legend.title = element_text(face= "bold", size =12),
+        legend.text = element_text(size =11),
+        strip.text = element_text(face ="bold", size =11),
+        legend.position = "top")
+
+amplification_plot
+
+```
+
+# 4) Calculating Cohen's Kappa to determine how well the two primers agree with each other:
+```{r}
+# I will filter out all samples that had NA with one or both primers, so that I can check how well both primer sets agree with each other for samples that amplified.
+
+# Creating contingency tables for Cohen's Kappa:
+library(dplyr)
+library(tidyr)
+
+kappa_table_feather <- sexing_df %>%
+  select(Sample, Type, Assigned_sex_P8P2, Assigned_sex_voEP) %>%
+  filter(Type == "Feather") %>%
+  drop_na(Assigned_sex_P8P2, Assigned_sex_voEP) %>% 
+  with(table(Assigned_sex_P8P2, Assigned_sex_voEP)) %>%
+  as.matrix()
+  
+kappa_table_guano <- sexing_df %>%
+  select(Sample, Type, Assigned_sex_P8P2, Assigned_sex_voEP) %>%
+  filter(Type == "Guano") %>%
+  drop_na(Assigned_sex_P8P2, Assigned_sex_voEP) %>% 
+  with(table(Assigned_sex_P8P2, Assigned_sex_voEP)) %>%
+  as.matrix()
+  
+# Calculate Cohen's Kappa:
+library(psych)
+
+cohens_kappa_feather <- cohen.kappa(kappa_table_feather)
+
+cohens_kappa_guano <- cohen.kappa(kappa_table_guano)
+
+```
+
+# 5) Comparing the mismatches between primers to check if there is a systematic bias:
+```{r}
+# I'll use McNemar's test to compare the mismatches by both primer sets to see if there is a systematic bias:
+
+library(exact2x2)
+
+mcnemars_sex_feather <- mcnemar.exact(kappa_table_feather)
+
+mcnemars_sex_guano <- mcnemar.exact(kappa_table_guano)
+```
+
+# Plotting concordant vs. discordant samples:
+```{r}
+sex_con_plotdf <- sexing_df %>%
+  select(Sample, Type, Assigned_sex_P8P2, Assigned_sex_voEP) %>%
+  drop_na(Assigned_sex_P8P2, Assigned_sex_voEP) %>% 
+  mutate(Consensus = case_when(Assigned_sex_P8P2 == "M" & Assigned_sex_voEP == "M" ~ "Male",
+                               Assigned_sex_P8P2 == "F" & Assigned_sex_voEP == "F" ~ "Female",
+                               Assigned_sex_P8P2 != Assigned_sex_voEP ~ "Mismatch"),
+         Consensus = factor(Consensus, levels = c("Female", 
+                                                  "Male", 
+                                                  "Mismatch"))) %>%
+  pivot_longer(cols = c(Assigned_sex_P8P2, Assigned_sex_voEP),
+               names_to = "Primer",
+               values_to = "Sex",
+               names_prefix = "Assigned_sex_") %>%
+  mutate(Primer = factor(Primer, 
+                         levels = c("P8P2", "voEP"), 
+                         labels = c("P8/P2", "voEP"))) %>%
+    mutate(Type = factor(Type, 
+                       levels = c("Feather", "Guano"),
+                       labels = c("Feather (n = 91)", "Guano (n = 150)"))) %>%
+  group_by(Type, Primer, Consensus) %>%
+  tally()
+
+# Creating the stats label:
+feather_sexstats <- "paste(italic(kappa) == 0.98, ', ') ~ paste(italic(p[bias]) == 1.0)"
+guano_sexstats <- "paste(italic(kappa) == 0.64, ', ') ~ paste(italic(p[bias]) == 2.98 %*% 10^-8)"
+
+sexstats_annotation <- data.frame(Type = c("Feather (n = 91)", "Guano (n = 150)"),
+                                  start = c("P8/P2", "P8/P2"), 
+                                  end = c("voEP", "voEP"),     
+                                  y_position = c(95, 155),
+                                  label = c(feather_sexstats, guano_sexstats))
+
+sex_con_plot <- ggplot(sex_con_plotdf, aes(x = Primer, y = n, fill = Consensus)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.8, color = "black", linewidth = 0.3) +
+  facet_wrap(~ Type, scales = "free_y") +
+  geom_bracket(data = sexstats_annotation,
+               aes(xmin = start, xmax = end, label = label, y.position = y_position),
+               inherit.aes = FALSE,
+               type = "expression",
+               tip.length = 0.02, 
+               vjust = -0.1,
+               size = 0.4,
+               label.size = 3.5) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.08))) + 
+  theme_classic() +
+  labs(x = "Primer", y= "Number of Samples", fill = "Sex") +
+  scale_fill_manual(values = c("#CBA2F5","#75C2FA", "#FFC182")) +
+  theme(axis.title = element_text(face= "bold", size =12),
+        axis.text = element_text(size =11),
+        legend.title = element_text(face= "bold", size =12),
+        legend.text = element_text(size =11),
+        strip.text = element_text(face ="bold", size =11),
+        legend.position = "top")
+
+sex_con_plot
+```
+
+# Plotting discordant sample replicates:
+```{r}
+library(stringr)
+
+discordant_df <- sexing_df %>%
+  filter(Assigned_sex_P8P2 != Assigned_sex_voEP) %>%
+  select(Sample, Type, Sex1_P8P2, Sex2_P8P2, Sex3_P8P2, Sex1_voEP, Sex2_voEP, Sex3_voEP, Assigned_sex_P8P2, Assigned_sex_voEP) %>%
+  pivot_longer(cols = c(Sex1_P8P2, Sex2_P8P2, Sex3_P8P2, Sex1_voEP, Sex2_voEP, Sex3_voEP),
+               names_to = c("Replicate", "Primer"),
+               names_pattern = "Sex(\\d)_(.*)",
+               values_to = "Sex") %>%
+  mutate(Sex = str_remove(Sex, "\\?")) %>%
+  mutate(Primer = factor(Primer, 
+                         levels = c("P8P2", "voEP"), 
+                         labels = c("P8/P2", "voEP"))) %>%
+  arrange(desc(Type), Sample) %>% 
+  mutate(Sample = factor(Sample, levels = unique(Sample))) %>%
+  replace_na(list(Sex = "NA"))
+
+
+discordant_heatmap <- ggplot(discordant_df, aes(x = Replicate, y = factor(Sample), fill = Sex)) +
+  geom_tile(color = "white", linewidth = 0.1) +
+  facet_wrap(~ Primer) +
+  scale_fill_manual(values = c("M" = "#75C2FA", "F" = "#CBA2F5", "NR" = "white", "NA" = "#A1A1A1"), 
+                    breaks = c("F", "M", "NA"),
+                    labels = c("F" = "Female", "M" = "Male", "NA" = "NA")) +
+  theme_classic() +
+  labs(x = "PCR Replicates", y= "Discordant Samples", fill = "Sex") +
+  theme(axis.title = element_text(face= "bold", size =12),
+        axis.text.y = element_blank(),
+        axis.text.x = element_text(size =11),
+        legend.title = element_text(face= "bold", size =12),
+        legend.text = element_text(size =11),
+        strip.text = element_text(face ="bold", size =11),
+        legend.position = "right")
+
+discordant_heatmap
+```
+
+# Combining all plots:
+```{r}
+library(patchwork)
+
+combined_plot <- (amplification_plot + sex_con_plot) / discordant_heatmap + 
+  plot_annotation(tag_levels = "A", tag_suffix = ".") & 
+  theme(plot.tag = element_text(face = "bold", size = 14),
+        plot.tag.position = c(0, 1))
+
+combined_plot 
+
+library(svglite)
+
+#ggsave(filename = "/media/vickyooi/Expansion/Sexing/R_analysis/Plots/final_combined_plot.svg", width = 16.5, height = 15, units ="cm", dpi = 300, scale =1.5, device = svglite)
+```
+
